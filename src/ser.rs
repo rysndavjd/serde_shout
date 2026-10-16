@@ -15,29 +15,29 @@ use embedded_io::Write;
 /// - is not empty
 ///
 /// [POSIX specification](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap03.html#tag_03_3.216)
-fn validate_key(key: &str) -> Result<&str, SerError> {
+fn validate_key(key: &[u8]) -> Result<(), SerError> {
     if key.is_empty() {
         return Err(SerError::EmptyKey);
     }
 
-    let mut characters = key.chars();
+    let mut characters = key.iter();
 
     if let Some(c) = characters.next() {
         if c.is_ascii_digit() {
             return Err(SerError::KeyStartsWithDigit);
         }
-        if !(c.is_ascii_alphabetic() || c == '_') {
+        if !(c.is_ascii_alphabetic() || *c == b'_') {
             return Err(SerError::InvalidKey);
         }
     }
 
     for c in characters {
-        if !(c.is_ascii_alphanumeric() || c == '_') {
+        if !(c.is_ascii_alphanumeric() || *c == b'_') {
             return Err(SerError::InvalidKey);
         }
     }
 
-    Ok(key)
+    Ok(())
 }
 
 /// Quotes if necessary a string so a POSIX shell reads it back as exactly
@@ -177,13 +177,16 @@ where
     }
 
     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
-        let key = validate_key(v)?;
-        self.ser.writer.write_all(key.as_bytes())?;
+        self.serialize_bytes(v.as_bytes())?;
         Ok(())
     }
 
-    fn serialize_bytes(self, _: &[u8]) -> Result<Self::Ok, Self::Error> {
-        Err(SerError::UnsupportedSerialization)
+    fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
+        match validate_key(v) {
+            Ok(_) => self.ser.writer.write_all(v)?,
+            Err(e) => return Err(e),
+        }
+        Ok(())
     }
 
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
@@ -1181,19 +1184,19 @@ mod tests {
 
     #[test]
     fn validate_key_fn_valid() {
-        assert_eq!(validate_key("key"), Ok("key"));
-        assert_eq!(validate_key("_unused"), Ok("_unused"));
-        assert_eq!(validate_key("Object_Type1"), Ok("Object_Type1"));
+        assert_eq!(validate_key(b"key"), Ok(()));
+        assert_eq!(validate_key(b"_unused"), Ok(()));
+        assert_eq!(validate_key(b"Object_Type1"), Ok(()));
     }
 
     #[test]
     fn validate_key_fn_invalid() {
-        assert_eq!(validate_key(""), Err(SerError::EmptyKey));
-        assert_eq!(validate_key("1a"), Err(SerError::KeyStartsWithDigit));
-        assert_eq!(validate_key("-a"), Err(SerError::InvalidKey));
-        assert_eq!(validate_key("é"), Err(SerError::InvalidKey));
-        assert_eq!(validate_key("a b"), Err(SerError::InvalidKey));
-        assert_eq!(validate_key("a=b"), Err(SerError::InvalidKey));
+        assert_eq!(validate_key(b""), Err(SerError::EmptyKey));
+        assert_eq!(validate_key(b"1a"), Err(SerError::KeyStartsWithDigit));
+        assert_eq!(validate_key(b"-a"), Err(SerError::InvalidKey));
+        assert_eq!(validate_key(b"\xE9"), Err(SerError::InvalidKey));
+        assert_eq!(validate_key(b"a b"), Err(SerError::InvalidKey));
+        assert_eq!(validate_key(b"a=b"), Err(SerError::InvalidKey));
     }
 
     #[test]
