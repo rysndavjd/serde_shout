@@ -905,13 +905,13 @@ pub trait Formatter {
     /// With a space ([`PosixCompactFormatter`]):
     ///
     /// ```text
-    /// crate=serde_dotenv version=1 owner=rysndavjd
+    /// crate=serde_shout version=1 owner=rysndavjd
     /// ```
     ///
     /// With a newline ([`PosixPrettyFormatter`]):
     ///
     /// ```text
-    /// crate=serde_dotenv
+    /// crate=serde_shout
     /// version=1
     /// owner=rysndavjd
     /// ```
@@ -1127,7 +1127,7 @@ impl Formatter for BashPrettyFormatter {
 ///
 /// ```
 /// use std::io::stdout;
-/// use serde_dotenv::{to_writer, PosixPrettyFormatter};
+/// use serde_shout::{to_writer, PosixPrettyFormatter};
 /// use serde::Serialize;
 ///
 /// #[derive(Serialize)]
@@ -1159,7 +1159,7 @@ where
 ///
 /// ```
 /// use std::io::stdout;
-/// use serde_dotenv::{to_vec, PosixCompactFormatter};
+/// use serde_shout::{to_vec, PosixCompactFormatter};
 /// use serde::Serialize;
 ///
 /// #[derive(Serialize)]
@@ -1197,7 +1197,7 @@ where
 ///
 /// ```
 /// use std::io::stdout;
-/// use serde_dotenv::{to_string, BashPrettyFormatter};
+/// use serde_shout::{to_string, BashPrettyFormatter};
 /// use serde::Serialize;
 ///
 /// #[derive(Serialize)]
