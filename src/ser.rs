@@ -1,5 +1,5 @@
 use crate::{error::SerError, std::num::FpCategory};
-use alloc::{borrow::Cow, string::String, vec::Vec};
+use alloc::{string::String, vec::Vec};
 use lexical_core::FormattedSize;
 use serde::ser::{self, Impossible, Serialize};
 
@@ -9,105 +9,12 @@ use std::io::Write;
 #[cfg(feature = "no_std")]
 use embedded_io::Write;
 
-/// Validates given key returning it if
+/// Validates given key if
 /// - starts with `A-Z`, `a-z`, or `_`
 /// - contains only `A-Z`, `a-z`, `0-9`, or `_` after that
 /// - is not empty
 ///
 /// [POSIX specification](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap03.html#tag_03_3.216)
-fn validate_key(key: &[u8]) -> Result<(), SerError> {
-    if key.is_empty() {
-        return Err(SerError::EmptyKey);
-    }
-
-    let mut characters = key.iter();
-
-    if let Some(c) = characters.next() {
-        if c.is_ascii_digit() {
-            return Err(SerError::KeyStartsWithDigit);
-        }
-        if !(c.is_ascii_alphabetic() || *c == b'_') {
-            return Err(SerError::InvalidKey);
-        }
-    }
-
-    for c in characters {
-        if !(c.is_ascii_alphanumeric() || *c == b'_') {
-            return Err(SerError::InvalidKey);
-        }
-    }
-
-    Ok(())
-}
-
-/// Quotes if necessary a string so a POSIX shell reads it back as exactly
-/// the same string, with no expansion, globbing, or word splitting.
-///
-/// Only single quotes are used for quoting, which keeps the output portable
-/// and should be immune to any shell-quirks even if they follow the POSIX
-/// specification loosely.
-///
-/// [POSIX specification](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html)
-fn serialize_value<'a>(val: &'a [u8], escape: bool) -> Result<Cow<'a, [u8]>, SerError> {
-    if val.is_empty() {
-        return Ok(Cow::Borrowed(b"''"));
-    }
-
-    let mut borrow = true;
-
-    for c in val {
-        match c {
-            b'+'
-            | b'-'
-            | b'.'
-            | b'/'
-            | b':'
-            | b'@'
-            | b']'
-            | b'_'
-            | b'0'..=b'9'
-            | b'A'..=b'Z'
-            | b'a'..=b'z' => (),
-            b'\0' => return Err(SerError::NullByte),
-            _ => {
-                borrow = false;
-            }
-        };
-    }
-
-    if borrow {
-        return Ok(Cow::Borrowed(val));
-    }
-
-    let mut output: Vec<u8> = Vec::new();
-
-    if escape {
-        for c in b"'\\''" {
-            output.push(*c);
-        }
-    } else {
-        output.push(b'\'');
-    }
-    for c in val {
-        if *c == b'\'' {
-            for c in b"'\\''" {
-                output.push(*c);
-            }
-        } else {
-            output.push(*c);
-        }
-    }
-    if escape {
-        for c in b"'\\''" {
-            output.push(*c);
-        }
-    } else {
-        output.push(b'\'');
-    }
-
-    Ok(Cow::Owned(output))
-}
-
 struct MapKeySerializer<'a, W: 'a, F: Formatter> {
     ser: &'a mut Serializer<W, F>,
 }
@@ -182,10 +89,28 @@ where
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        match validate_key(v) {
-            Ok(_) => self.ser.writer.write_all(v)?,
-            Err(e) => return Err(e),
+        if v.is_empty() {
+            return Err(SerError::EmptyKey);
         }
+
+        let mut characters = v.iter();
+
+        if let Some(c) = characters.next() {
+            if c.is_ascii_digit() {
+                return Err(SerError::KeyStartsWithDigit);
+            }
+            if !(c.is_ascii_alphabetic() || *c == b'_') {
+                return Err(SerError::InvalidKey);
+            }
+        }
+
+        for c in characters {
+            if !(c.is_ascii_alphanumeric() || *c == b'_') {
+                return Err(SerError::InvalidKey);
+            }
+        }
+
+        self.ser.writer.write_all(v)?;
         Ok(())
     }
 
@@ -414,6 +339,15 @@ where
 }
 
 /// A serde serializer that writes shell assignments.
+///
+/// Quotes if necessary a string so a POSIX shell reads it back as exactly
+/// the same string, with no expansion, globbing, or word splitting.
+///
+/// Only single quotes are used for quoting, which keeps the output portable
+/// and should be immune to any shell-quirks even if they follow the POSIX
+/// specification loosely.
+///
+/// [POSIX specification](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html)
 pub struct Serializer<W, F> {
     writer: W,
     formatter: F,
@@ -594,9 +528,64 @@ where
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
+        if v.is_empty() {
+            if self.in_seq && self.formatter.escape_seq() {
+                self.writer.write_all(b"'\\'''\\''")?;
+            } else {
+                self.writer.write_all(b"''")?;
+            }
+            return Ok(());
+        }
+
+        let mut borrow = true;
+        for c in v {
+            match c {
+                b'+'
+                | b'-'
+                | b'.'
+                | b'/'
+                | b':'
+                | b'@'
+                | b']'
+                | b'_'
+                | b'0'..=b'9'
+                | b'A'..=b'Z'
+                | b'a'..=b'z' => (),
+                b'\0' => return Err(SerError::NullByte),
+                _ => {
+                    borrow = false;
+                }
+            };
+        }
+
+        if borrow {
+            self.writer.write_all(v)?;
+            return Ok(());
+        }
+
         let escape = self.in_seq && self.formatter.escape_seq();
-        let value = serialize_value(v, escape)?;
-        self.writer.write_all(value.as_ref())?;
+
+        if escape {
+            self.writer.write_all(b"'\\''")?;
+        } else {
+            self.writer.write_all(b"'")?;
+        }
+
+        let mut parts = v.split(|&c| c == b'\'');
+        if let Some(first) = parts.next() {
+            self.writer.write_all(first)?;
+        }
+        for part in parts {
+            self.writer.write_all(b"'\\''")?;
+            self.writer.write_all(part)?;
+        }
+
+        if escape {
+            self.writer.write_all(b"'\\''")?;
+        } else {
+            self.writer.write_all(b"'")?;
+        }
+
         Ok(())
     }
 
@@ -714,7 +703,18 @@ where
     }
 }
 
+/// Controls the syntax of the output written by [`Serializer`].
+///
+/// Built in formatters:
+///
+/// | Formatter                 | Pairs           | Sequences       |
+/// |---------------------------|-----------------|-----------------|
+/// | [`PosixCompactFormatter`] | space separated | one quoted word |
+/// | [`PosixPrettyFormatter`]  | one per line    | one quoted word |
+/// | [`BashCompactFormatter`]  | space separated | Bash array      |
+/// | [`BashPrettyFormatter`]   | one per line    | Bash array      |
 pub trait Formatter {
+    /// Writes [`Option::None`] to the specified writer.
     #[inline]
     fn write_none<W>(&mut self, writer: &mut W) -> Result<(), SerError>
     where
@@ -724,6 +724,7 @@ pub trait Formatter {
         Ok(())
     }
 
+    /// Writes [`unit`] to the specified writer.
     #[inline]
     fn write_unit<W>(&mut self, writer: &mut W) -> Result<(), SerError>
     where
@@ -740,9 +741,9 @@ pub trait Formatter {
         W: ?Sized + Write,
     {
         let s = if v {
-            b"true" as &[u8]
+            b"true".as_slice()
         } else {
-            b"false" as &[u8]
+            b"false".as_slice()
         };
         writer.write_all(s)?;
         Ok(())
@@ -923,6 +924,24 @@ pub trait Formatter {
         Ok(())
     }
 
+    /// Whether values that need quoting inside a sequence are wrapped in an
+    /// escaped quote (`'\''`) instead of a plain quote (`'`).
+    ///
+    /// # Example
+    ///
+    /// For the elements `a b` and `c`:
+    ///
+    /// With `true` ([`PosixCompactFormatter`]):
+    ///
+    /// ```text
+    /// list=''\''a b'\'' c'
+    /// ```
+    ///
+    /// With `false` ([`BashCompactFormatter`]):
+    ///
+    /// ```text
+    /// list=('a b' c)
+    /// ```
     #[inline]
     fn escape_seq(&self) -> bool {
         true
@@ -989,13 +1008,26 @@ pub trait Formatter {
 }
 
 /// Writes pairs separated by a space, with sequences as a quoted word.
-#[derive(Debug, Clone, Default)]
+///
+/// Output should be valid in any POSIX shell.
+///
+/// ```text
+/// name=app ports='80 443' tags=''\''a b'\'' c'
+/// ```
+#[derive(Debug, Copy, Clone, Default, Hash)]
 pub struct PosixCompactFormatter;
 
 impl Formatter for PosixCompactFormatter {}
 
 /// Writes pairs separated by a space, with sequences as Bash arrays.
-#[derive(Debug, Clone, Default)]
+///
+/// Arrays are not part of POSIX, so the output needs Bash, Zsh or a similar
+/// shell.
+///
+/// ```text
+/// name=app ports=(80 443) tags=('a b' c)
+/// ```
+#[derive(Debug, Copy, Clone, Default, Hash)]
 pub struct BashCompactFormatter;
 
 impl Formatter for BashCompactFormatter {
@@ -1022,7 +1054,15 @@ impl Formatter for BashCompactFormatter {
 }
 
 /// Writes one pair per line, with sequences as a quoted word.
-#[derive(Debug, Clone, Default)]
+///
+/// Output should be valid in any POSIX shell.
+///
+/// ```text
+/// name=app
+/// ports='80 443'
+/// tags=''\''a b'\'' c'
+/// ```
+#[derive(Debug, Copy, Clone, Default, Hash)]
 pub struct PosixPrettyFormatter;
 
 impl Formatter for PosixPrettyFormatter {
@@ -1037,7 +1077,16 @@ impl Formatter for PosixPrettyFormatter {
 }
 
 /// Writes one pair per line, with sequences as Bash arrays.
-#[derive(Debug, Clone, Default)]
+///
+/// Arrays are not part of POSIX, so the output needs Bash, Zsh or a similar
+/// shell.
+///
+/// ```text
+/// name=app
+/// ports=(80 443)
+/// tags=('a b' c)
+/// ```
+#[derive(Debug, Copy, Clone, Default, Hash)]
 pub struct BashPrettyFormatter;
 
 impl Formatter for BashPrettyFormatter {
@@ -1177,62 +1226,71 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::collections::BTreeMap;
     use core::f64::consts::PI;
 
     use super::*;
-    use alloc::borrow::Cow;
 
-    #[test]
-    fn validate_key_fn_valid() {
-        assert_eq!(validate_key(b"key"), Ok(()));
-        assert_eq!(validate_key(b"_unused"), Ok(()));
-        assert_eq!(validate_key(b"Object_Type1"), Ok(()));
+    fn key(k: &str) -> Result<String, SerError> {
+        let mut map = BTreeMap::new();
+        map.insert(k, 1u8);
+        to_string(PosixCompactFormatter, &map)
+    }
+
+    fn value(input: &str) -> Result<String, SerError> {
+        to_string(PosixCompactFormatter, &input)
     }
 
     #[test]
-    fn validate_key_fn_invalid() {
-        assert_eq!(validate_key(b""), Err(SerError::EmptyKey));
-        assert_eq!(validate_key(b"1a"), Err(SerError::KeyStartsWithDigit));
-        assert_eq!(validate_key(b"-a"), Err(SerError::InvalidKey));
-        assert_eq!(validate_key(b"\xE9"), Err(SerError::InvalidKey));
-        assert_eq!(validate_key(b"a b"), Err(SerError::InvalidKey));
-        assert_eq!(validate_key(b"a=b"), Err(SerError::InvalidKey));
+    fn key_valid() {
+        assert_eq!(key("key"), Ok(String::from("key=1")));
+        assert_eq!(key("_unused"), Ok(String::from("_unused=1")));
+        assert_eq!(key("Object_Type1"), Ok(String::from("Object_Type1=1")));
     }
 
     #[test]
-    fn serialize_value_fn_valid() {
-        fn s(input: &[u8]) -> Vec<u8> {
-            serialize_value(input, false).unwrap().into_owned()
-        }
-
-        let r = serialize_value(b"a+b-c.d/e:f@g]h_i09", false).unwrap();
-        assert!(matches!(r, Cow::Borrowed(_)));
-
-        assert_eq!(s(b""), b"''");
-        assert_eq!(s(b"test"), b"test");
-        assert_eq!(s(b"121"), b"121");
-        assert_eq!(s(b"hello world"), b"'hello world'");
-        assert_eq!(s(b"$HOME"), b"'$HOME'");
-        assert_eq!(s(b"a\\b"), b"'a\\b'");
-        assert_eq!(s(b"say \"hi\""), b"'say \"hi\"'");
-        assert_eq!(s(b"a\nb"), b"'a\nb'");
-        assert_eq!(s(b"it's"), b"'it'\\''s'");
-        assert_eq!(s(b"it's $5"), b"'it'\\''s $5'");
-        assert_eq!(s(b"it's a\\b"), b"'it'\\''s a\\b'");
-        assert_eq!(s(b"it's \"x\""), b"'it'\\''s \"x\"'");
-        assert_eq!(s(b"it's\nmore"), b"'it'\\''s\nmore'");
+    fn key_invalid() {
+        assert_eq!(key(""), Err(SerError::EmptyKey));
+        assert_eq!(key("1a"), Err(SerError::KeyStartsWithDigit));
+        assert_eq!(key("-a"), Err(SerError::InvalidKey));
+        assert_eq!(key("\u{e9}"), Err(SerError::InvalidKey));
+        assert_eq!(key("a b"), Err(SerError::InvalidKey));
+        assert_eq!(key("a=b"), Err(SerError::InvalidKey));
     }
 
     #[test]
-    fn serialize_value_fn_invalid() {
-        assert!(matches!(
-            serialize_value(b"a\0b", false),
-            Err(SerError::NullByte)
-        ));
-        assert!(matches!(
-            serialize_value(b"a b\0", false),
-            Err(SerError::NullByte)
-        ));
+    fn value_valid() {
+        assert_eq!(value("a+b-c.d/e:f@g]h_i09").unwrap(), "a+b-c.d/e:f@g]h_i09");
+
+        assert_eq!(value("").unwrap(), "''");
+        assert_eq!(value("test").unwrap(), "test");
+        assert_eq!(value("121").unwrap(), "121");
+        assert_eq!(value("hello world").unwrap(), "'hello world'");
+        assert_eq!(value("$HOME").unwrap(), "'$HOME'");
+        assert_eq!(value("a\\b").unwrap(), "'a\\b'");
+        assert_eq!(value("say \"hi\"").unwrap(), "'say \"hi\"'");
+        assert_eq!(value("a\nb").unwrap(), "'a\nb'");
+        assert_eq!(value("it's").unwrap(), "'it'\\''s'");
+        assert_eq!(value("it's $5").unwrap(), "'it'\\''s $5'");
+        assert_eq!(value("it's a\\b").unwrap(), "'it'\\''s a\\b'");
+        assert_eq!(value("it's \"x\"").unwrap(), "'it'\\''s \"x\"'");
+        assert_eq!(value("it's\nmore").unwrap(), "'it'\\''s\nmore'");
+    }
+
+    #[test]
+    fn value_invalid() {
+        assert_eq!(value("a\0b"), Err(SerError::NullByte));
+        assert_eq!(value("a b\0"), Err(SerError::NullByte));
+    }
+
+    #[test]
+    fn empty_in_seq() {
+        let items = ["", "a"].to_vec();
+        assert_eq!(
+            to_string(PosixCompactFormatter, &items).unwrap(),
+            "''\\'''\\'' a'"
+        );
+        assert_eq!(to_string(BashCompactFormatter, &items).unwrap(), "('' a)");
     }
 
     #[derive(serde::Serialize)]

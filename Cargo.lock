@@ -114,7 +114,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_dotenv"
+name = "serde_shout"
 version = "0.1.0"
 dependencies = [
  "embedded-io",
