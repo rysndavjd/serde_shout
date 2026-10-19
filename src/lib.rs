@@ -14,8 +14,9 @@ pub use crate::{
     // de::{Deserializer, from_str},
     error::SerError,
     ser::{
-        BashCompactFormatter, BashPrettyFormatter, Formatter, PosixCompactFormatter,
-        PosixPrettyFormatter, Serializer, to_string, to_vec, to_writer,
+        BashCompactFormatter, BashPrettyFormatter, ExportCompactFormatter, ExportPrettyFormatter,
+        Formatter, PosixCompactFormatter, PosixPrettyFormatter, Serializer, to_string, to_vec,
+        to_writer,
     },
 };
 

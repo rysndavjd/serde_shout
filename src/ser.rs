@@ -233,8 +233,10 @@ where
         T: ?Sized + Serialize,
     {
         if !self.first {
-            self.ser.formatter.split_object(&mut self.ser.writer)?;
+            self.ser.formatter.split_pair(&mut self.ser.writer)?;
         }
+        self.ser.formatter.begin_pair(&mut self.ser.writer)?;
+
         self.first = false;
         key.serialize(MapKeySerializer { ser: self.ser })
     }
@@ -249,6 +251,8 @@ where
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.ser.in_map = false;
+        self.ser.formatter.end_document(&mut self.ser.writer)?;
         Ok(())
     }
 }
@@ -352,6 +356,7 @@ pub struct Serializer<W, F> {
     writer: W,
     formatter: F,
     in_seq: bool,
+    in_map: bool,
 }
 
 impl<W> Serializer<W, PosixCompactFormatter>
@@ -412,6 +417,7 @@ where
             writer,
             formatter,
             in_seq: false,
+            in_map: false,
         }
     }
 
@@ -678,6 +684,10 @@ where
     }
 
     fn serialize_map(self, _: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        if self.in_map || self.in_seq {
+            return Err(SerError::UnsupportedSerialization);
+        }
+        self.in_map = true;
         Ok(Compound {
             ser: self,
             first: true,
@@ -707,12 +717,14 @@ where
 ///
 /// Built in formatters:
 ///
-/// | Formatter                 | Pairs           | Sequences       |
-/// |---------------------------|-----------------|-----------------|
-/// | [`PosixCompactFormatter`] | space separated | one quoted word |
-/// | [`PosixPrettyFormatter`]  | one per line    | one quoted word |
-/// | [`BashCompactFormatter`]  | space separated | Bash array      |
-/// | [`BashPrettyFormatter`]   | one per line    | Bash array      |
+/// | Formatter                  | Pairs           | Sequences       |
+/// |----------------------------|-----------------|-----------------|
+/// | [`PosixCompactFormatter`]  | space separated | one quoted word |
+/// | [`PosixPrettyFormatter`]   | one per line    | one quoted word |
+/// | [`BashCompactFormatter`]   | space separated | Bash array      |
+/// | [`BashPrettyFormatter`]    | one per line    | Bash array      |
+/// | [`ExportCompactFormatter`] | `;` separated   | one quoted word |
+/// | [`ExportPrettyFormatter`]  | one per line    | one quoted word |
 pub trait Formatter {
     /// Writes [`Option::None`] to the specified writer.
     #[inline]
@@ -734,7 +746,7 @@ pub trait Formatter {
         Ok(())
     }
 
-    /// Writes a `true` or `false` value to the specified writer.
+    /// Writes a [`true`] or [`false`] value to the specified writer.
     #[inline]
     fn write_bool<W>(&mut self, writer: &mut W, v: bool) -> Result<(), SerError>
     where
@@ -897,6 +909,24 @@ pub trait Formatter {
         Ok(())
     }
 
+    /// Writes text before each key, including the first one.
+    ///
+    /// # Example
+    ///
+    /// With `export ` ([`ExportPrettyFormatter`]):
+    ///
+    /// ```text
+    /// export crate=serde_shout
+    /// export version=1
+    /// ```
+    #[inline]
+    fn begin_pair<W>(&mut self, _writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        Ok(())
+    }
+
     /// Writes the separator between two key value pairs, not after the last
     /// one, so the output has no trailing separator.
     ///
@@ -916,7 +946,7 @@ pub trait Formatter {
     /// owner=rysndavjd
     /// ```
     #[inline]
-    fn split_object<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    fn split_pair<W>(&mut self, writer: &mut W) -> Result<(), SerError>
     where
         W: ?Sized + Write,
     {
@@ -1005,6 +1035,24 @@ pub trait Formatter {
         writer.write_all(b"'")?;
         Ok(())
     }
+
+    /// Writes text after the last key value pair.
+    ///
+    /// # Example
+    ///
+    /// With a newline ([`PosixPrettyFormatter`]):
+    ///
+    /// ```text
+    /// crate=serde_shout
+    /// version=1
+    /// ```
+    #[inline]
+    fn end_document<W>(&mut self, _writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        Ok(())
+    }
 }
 
 /// Writes pairs separated by a space, with sequences as a quoted word.
@@ -1066,12 +1114,19 @@ impl Formatter for BashCompactFormatter {
 pub struct PosixPrettyFormatter;
 
 impl Formatter for PosixPrettyFormatter {
-    fn split_object<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    fn split_pair<W>(&mut self, writer: &mut W) -> Result<(), SerError>
     where
         W: ?Sized + Write,
     {
         writer.write_all(b"\n")?;
+        Ok(())
+    }
 
+    fn end_document<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        writer.write_all(b"\n")?;
         Ok(())
     }
 }
@@ -1090,12 +1145,11 @@ impl Formatter for PosixPrettyFormatter {
 pub struct BashPrettyFormatter;
 
 impl Formatter for BashPrettyFormatter {
-    fn split_object<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    fn split_pair<W>(&mut self, writer: &mut W) -> Result<(), SerError>
     where
         W: ?Sized + Write,
     {
         writer.write_all(b"\n")?;
-
         Ok(())
     }
 
@@ -1117,6 +1171,75 @@ impl Formatter for BashPrettyFormatter {
         W: ?Sized + Write,
     {
         writer.write_all(b")")?;
+        Ok(())
+    }
+
+    fn end_document<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        writer.write_all(b"\n")?;
+        Ok(())
+    }
+}
+
+/// Writes `export` statement separated by a `;`, with sequences as a quoted word.
+///
+/// ```text
+/// export name=app;export ports='80 443'
+/// ```
+#[derive(Debug, Copy, Clone, Default, Hash)]
+pub struct ExportCompactFormatter;
+
+impl Formatter for ExportCompactFormatter {
+    fn split_pair<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        writer.write_all(b";")?;
+        Ok(())
+    }
+
+    fn begin_pair<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        writer.write_all(b"export ")?;
+        Ok(())
+    }
+}
+
+/// Writes one `export` statement per line, with sequences as a quoted word.
+///
+/// ```text
+/// export name=app
+/// export ports='80 443'
+/// ```
+#[derive(Debug, Copy, Clone, Default, Hash)]
+pub struct ExportPrettyFormatter;
+
+impl Formatter for ExportPrettyFormatter {
+    fn split_pair<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        writer.write_all(b"\n")?;
+        Ok(())
+    }
+
+    fn begin_pair<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        writer.write_all(b"export ")?;
+        Ok(())
+    }
+
+    fn end_document<W>(&mut self, writer: &mut W) -> Result<(), SerError>
+    where
+        W: ?Sized + Write,
+    {
+        writer.write_all(b"\n")?;
         Ok(())
     }
 }
@@ -1213,7 +1336,7 @@ where
 ///
 /// let output = to_string(BashPrettyFormatter, &dev).unwrap();
 ///
-/// assert_eq!(output, String::from("path=/dev/sda\nsize=500000000000"))
+/// assert_eq!(output, String::from("path=/dev/sda\nsize=500000000000\n"))
 /// ```
 pub fn to_string<F, T>(formatter: F, value: &T) -> Result<String, SerError>
 where
@@ -1328,7 +1451,14 @@ mod tests {
     fn posix_pretty() {
         assert_eq!(
             to_string(PosixPrettyFormatter, &valid_example()).unwrap(),
-            "unit=Unit\noption_none=None\ninteger=256\nfloat=3.141592653589793\nstring=Example\nnumbers='10 5 64'\nstrings=''\\''\"Non Nested\"'\\'' String '\\''Are working'\\'' '\\'''\\''¯\\_(ツ)_/¯'\\'''\\'''"
+            "unit=Unit
+option_none=None
+integer=256
+float=3.141592653589793
+string=Example
+numbers='10 5 64'
+strings=''\\''\"Non Nested\"'\\'' String '\\''Are working'\\'' '\\'''\\''¯\\_(ツ)_/¯'\\'''\\'''
+"
         );
     }
 
@@ -1344,7 +1474,37 @@ mod tests {
     fn bash_pretty() {
         assert_eq!(
             to_string(BashPrettyFormatter, &valid_example()).unwrap(),
-            "unit=Unit\noption_none=None\ninteger=256\nfloat=3.141592653589793\nstring=Example\nnumbers=(10 5 64)\nstrings=('\"Non Nested\"' String 'Are working' ''\\''¯\\_(ツ)_/¯'\\''')"
+            "unit=Unit
+option_none=None
+integer=256
+float=3.141592653589793
+string=Example
+numbers=(10 5 64)
+strings=('\"Non Nested\"' String 'Are working' ''\\''¯\\_(ツ)_/¯'\\''')
+"
+        );
+    }
+
+    #[test]
+    fn export_compact() {
+        assert_eq!(
+            to_string(ExportCompactFormatter, &valid_example()).unwrap(),
+            "export unit=Unit;export option_none=None;export integer=256;export float=3.141592653589793;export string=Example;export numbers='10 5 64';export strings=''\\''\"Non Nested\"'\\'' String '\\''Are working'\\'' '\\'''\\''¯\\_(ツ)_/¯'\\'''\\'''"
+        );
+    }
+
+    #[test]
+    fn export_pretty() {
+        assert_eq!(
+            to_string(ExportPrettyFormatter, &valid_example()).unwrap(),
+            "export unit=Unit
+export option_none=None
+export integer=256
+export float=3.141592653589793
+export string=Example
+export numbers='10 5 64'
+export strings=''\\''\"Non Nested\"'\\'' String '\\''Are working'\\'' '\\'''\\''¯\\_(ツ)_/¯'\\'''\\'''
+"
         );
     }
 }
