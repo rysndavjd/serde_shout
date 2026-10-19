@@ -1,13 +1,14 @@
-use crate::{error::SerError, std::num::FpCategory};
+#[cfg(feature = "alloc")]
 use alloc::{string::String, vec::Vec};
-use lexical_core::FormattedSize;
-use serde::ser::{self, Impossible, Serialize};
-
 #[cfg(feature = "std")]
 use std::io::Write;
 
 #[cfg(feature = "no_std")]
 use embedded_io::Write;
+use lexical_core::FormattedSize;
+use serde::ser::{self, Impossible, Serialize};
+
+use crate::{error::SerError, std::num::FpCategory};
 
 /// Validates given key if
 /// - starts with `A-Z`, `a-z`, or `_`
@@ -1304,6 +1305,7 @@ where
 ///
 /// assert_eq!(output, b"ipv4='1 1 1 1' service=DNS owner='Cloudflare, Inc.' version=2.1".to_vec())
 /// ```
+#[cfg(feature = "alloc")]
 pub fn to_vec<F, T>(formatter: F, value: &T) -> Result<Vec<u8>, SerError>
 where
     F: Formatter,
@@ -1338,6 +1340,7 @@ where
 ///
 /// assert_eq!(output, String::from("path=/dev/sda\nsize=500000000000\n"))
 /// ```
+#[cfg(feature = "alloc")]
 pub fn to_string<F, T>(formatter: F, value: &T) -> Result<String, SerError>
 where
     F: Formatter,
@@ -1347,7 +1350,7 @@ where
     String::from_utf8(vec).map_err(|_| SerError::InvalidUtf8)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use alloc::collections::BTreeMap;
     use core::f64::consts::PI;

@@ -1,5 +1,6 @@
 #![no_std]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(all(not(feature = "std"), not(test)))]
 extern crate core as std;
@@ -10,13 +11,14 @@ extern crate std;
 mod error;
 mod ser;
 
+#[cfg(feature = "alloc")]
+pub use crate::ser::{to_string, to_vec};
 pub use crate::{
     // de::{Deserializer, from_str},
     error::SerError,
     ser::{
         BashCompactFormatter, BashPrettyFormatter, ExportCompactFormatter, ExportPrettyFormatter,
-        Formatter, PosixCompactFormatter, PosixPrettyFormatter, Serializer, to_string, to_vec,
-        to_writer,
+        Formatter, PosixCompactFormatter, PosixPrettyFormatter, Serializer, to_writer,
     },
 };
 

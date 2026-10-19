@@ -1,6 +1,10 @@
-use alloc::{fmt, format, string::String};
+#[cfg(feature = "alloc")]
+use alloc::string::{String, ToString};
+
+use crate::std::fmt;
 
 /// Errors that can occur while serializing data.
+#[non_exhaustive]
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SerError {
     /// Serialization method used is not supported.
@@ -20,7 +24,7 @@ pub enum SerError {
     /// The underlying writer returned an IO error.
     IoError,
     /// Custom message produced through [`serde::ser::Error::custom`].
-    Custom(String),
+    Custom(CustomMsg),
 }
 
 impl fmt::Display for SerError {
@@ -38,7 +42,7 @@ impl fmt::Display for SerError {
                 write!(f, "key contained a character outside `[A-Za-z0-9_]`")
             }
             SerError::NullByte => {
-                write!(f, "string contained a null byte (`\0`)")
+                write!(f, "string contained a null byte (`\\0`)")
             }
             SerError::InvalidUtf8 => {
                 write!(f, "value contains invalid UTF-8")
@@ -51,15 +55,39 @@ impl fmt::Display for SerError {
     }
 }
 
+/// Custom message produced through [`serde::ser::Error::custom`].
+#[repr(transparent)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct CustomMsg {
+    #[cfg(feature = "alloc")]
+    msg: String,
+}
+
+impl fmt::Display for CustomMsg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[cfg(feature = "alloc")]
+        {
+            write!(f, "{}", self.msg)
+        }
+        #[cfg(not(feature = "alloc"))]
+        {
+            write!(f, "custom message discarded (alloc disabled)")
+        }
+    }
+}
+#[cfg(feature = "alloc")]
 impl serde::ser::Error for SerError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
-        SerError::Custom(format!("{}", msg))
+        SerError::Custom(CustomMsg {
+            msg: msg.to_string(),
+        })
     }
 }
 
-impl serde::de::Error for SerError {
-    fn custom<T: fmt::Display>(msg: T) -> Self {
-        SerError::Custom(format!("{}", msg))
+#[cfg(not(feature = "alloc"))]
+impl serde::ser::Error for SerError {
+    fn custom<T: fmt::Display>(_msg: T) -> Self {
+        SerError::Custom(CustomMsg {})
     }
 }
 

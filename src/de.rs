@@ -1,13 +1,15 @@
-use crate::{
-    error::Error,
-    std::{iter::Map, mem::take, slice::SplitInclusive, str::from_utf8},
-};
 use alloc::{
     borrow::{Cow, ToOwned},
     string::String,
     vec::Vec,
 };
+
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, value::BytesDeserializer};
+
+use crate::{
+    error::Error,
+    std::{iter::Map, mem::take, slice::SplitInclusive, str::from_utf8},
+};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Default)]
 pub enum State {
@@ -758,9 +760,8 @@ mod tests {
 
     use serde::Deserialize;
 
-    use crate::{de::from_bytes, from_str};
-
     use super::{Error, parse_line};
+    use crate::{de::from_bytes, from_str};
 
     #[test]
     fn invalid_str() {
