@@ -77,6 +77,11 @@ pub enum DeError {
     ValueNotF32,
     ValueNotF64,
     EmptyString,
+    EmptyKey,
+    KeyStartsWithDigit,
+    /// Key contained a character outside `[A-Za-z0-9_]`.
+    InvalidKey,
+    MissingEqualSeparator,
     /// String contained a null byte (`\0`).
     NullByte,
     /// Value contains invalid UTF-8.
@@ -139,6 +144,16 @@ impl fmt::Display for DeError {
                 write!(f, "TODO!")
             }
             DeError::EmptyString => {
+                write!(f, "TODO!")
+            }
+            DeError::EmptyKey => {
+                write!(f, "TODO!")
+            }
+            DeError::KeyStartsWithDigit => write!(f, "key started with an ASCII digit"),
+            DeError::InvalidKey => {
+                write!(f, "key contained a character outside `[A-Za-z0-9_]`")
+            }
+            DeError::MissingEqualSeparator => {
                 write!(f, "TODO!")
             }
             DeError::NullByte => {
