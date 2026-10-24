@@ -1,204 +1,40 @@
-use alloc::{
-    borrow::{Cow, ToOwned},
-    string::String,
-    vec::Vec,
-};
+use alloc::{borrow::Cow, str::from_utf8, string::String, vec::Vec};
 
 use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, value::BytesDeserializer};
 
-use crate::{
-    error::DeError,
-    std::{iter::Map, mem::take, slice::Split, str::from_utf8},
-};
+use crate::error::DeError;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Default)]
-pub enum State {
+enum State {
     #[default]
     Unquoted,
     SingleQuoted,
     DoubleQuoted,
 }
 
-// fn parse_line<'a>(v: &'a [u8]) -> Result<(&'a [u8], Cow<'a, [u8]>), DeError> {
-//     if v.is_empty() {
-//         return Err(DeError::EmptyString);
-//     }
-
-//     let equal_pos = v
-//         .iter()
-//         .position(|b| b == &b'=')
-//         .ok_or(DeError::MissingEqualSeparator)?;
-
-//     let key = &v[..equal_pos];
-//     let val = &v[(equal_pos + 1)..];
-
-//     let mut key_iter = key.iter().enumerate();
-
-//     match key_iter.next() {
-//         Some((_, c)) if c.is_ascii_digit() => {
-//             return Err(DeError::IdentifierStartsWithDigit);
-//         }
-//         Some((i, c)) if !(c.is_ascii_alphabetic() || c == &b'_') => {
-//             return Err(DeError::InvalidIdentifier { index: i });
-//         }
-//         None => return Err(DeError::EmptyIdentifier),
-//         _ => (),
-//     }
-
-//     for (i, c) in key_iter {
-//         if !(c.is_ascii_alphanumeric() || c == &b'_') {
-//             return Err(DeError::InvalidIdentifier { index: i });
-//         }
-//     }
-
-//     if !val.iter().any(|b| {
-//         b == &b'"'
-//             || b == &b'\''
-//             || b == &b'\\'
-//             || b == &b'|'
-//             || b == &b'&'
-//             || b == &b';'
-//             || b == &b'<'
-//             || b == &b'>'
-//             || b == &b'('
-//             || b == &b')'
-//             || b == &b'`'
-//             || b == &b' '
-//             || b == &b'\t'
-//             || b == &b'\n'
-//     }) {
-//         return Ok((key, Cow::Borrowed(val)));
-//     }
-
-//     let mut output: Vec<u8> = Vec::new();
-//     let chars = &mut val.iter().enumerate();
-//     let mut state = State::Unquoted;
-
-//     while let Some((i, c)) = chars.next() {
-//         if c == &b'\\' && state != State::SingleQuoted {
-//             match chars.next() {
-//                 Some((_, escaped_char)) => {
-//                     output.push(*escaped_char);
-//                     continue;
-//                 }
-//                 None => return Err(DeError::ValueDanglingEscape),
-//             }
-//         }
-
-//         match state {
-//             State::Unquoted => match c {
-//                 &b'\'' => {
-//                     state = State::SingleQuoted;
-//                     continue;
-//                 }
-//                 &b'"' => {
-//                     state = State::DoubleQuoted;
-//                     continue;
-//                 }
-//                 &b'|' | &b'&' | &b';' | &b'<' | &b'>' | &b'(' | &b')' | &b'`' | &b' ' | &b'\t'
-//                 | b'\n' => {
-//                     return Err(DeError::ValueUnescapedShellChar { index: i });
-//                 }
-//                 _ => {}
-//             },
-//             State::SingleQuoted if c == &b'\'' => {
-//                 state = State::Unquoted;
-//                 continue;
-//             }
-//             State::DoubleQuoted if c == &b'"' => {
-//                 state = State::Unquoted;
-//                 continue;
-//             }
-//             _ => (),
-//         }
-
-//         output.push(*c);
-//     }
-
-//     match state {
-//         State::SingleQuoted => {
-//             return Err(DeError::ValueUnterminatedSingleQuote);
-//         }
-//         State::DoubleQuoted => {
-//             return Err(DeError::ValueUnterminatedDoubleQuote);
-//         }
-//         _ => (),
-//     }
-
-//     Ok((key, Cow::Owned(output)))
-// }
-
-/// (equal_pos, end_pos)
-fn next_pair(input: &[u8]) -> Result<(usize, usize), DeError> {
-    if input.is_empty() {
-        return Err(DeError::EmptyString);
-    }
-
+/// Removes quotes and escapes charaters, given input is already validated
+/// by MapAccess.
+fn extract_value(input: &[u8]) -> Result<Vec<u8>, DeError> {
+    let mut val: Vec<u8> = Vec::new();
     let mut i = 0;
-
-    match input[i] {
-        b'\0' => return Err(DeError::NullByte),
-        b'=' => return Err(DeError::EmptyKey),
-        c if c.is_ascii_digit() => return Err(DeError::KeyStartsWithDigit),
-        c if !(c.is_ascii_alphabetic() || c == b'_') => return Err(DeError::InvalidKey),
-        _ => i += 1,
-    }
-
-    let mut equal_pos: Option<usize> = None;
-    while equal_pos.is_none() && i < input.len() {
-        match input[i] {
-            b'\0' => return Err(DeError::NullByte),
-            b'=' => equal_pos = Some(i),
-            c if !(c.is_ascii_alphanumeric() || c == b'_') => return Err(DeError::InvalidKey),
-            _ => i += 1,
-        }
-    }
-    if equal_pos.is_none() {
-        return Err(DeError::MissingEqualSeparator);
-    }
-
-    let mut state = State::Unquoted;
     while i < input.len() {
         let c = input[i];
-        if c == b'\0' {
-            return Err(DeError::NullByte);
-        }
-        match state {
-            State::Unquoted => match c {
-                b'\\' => {
-                    i += 1;
-                    if i >= input.len() {
-                        return Err(DeError::ValueDanglingEscape);
-                    }
-                }
-                b'\'' => state = State::SingleQuoted,
-                b'"' => state = State::DoubleQuoted,
-                b' ' | b'\t' | b'\n' | b';' => break,
-                _ => {}
-            },
-            State::SingleQuoted if c == b'\'' => state = State::Unquoted,
-            State::DoubleQuoted => match c {
-                b'\\' => i += 1,
-                b'"' => state = State::Unquoted,
-                _ => {}
-            },
-            _ => {}
+        match c {
+            b'\'' | b'"' => (),
+            b'\\' => {
+                i += 1;
+                val.push(input[i]);
+            }
+            _ => val.push(c),
         }
         i += 1;
     }
-    match state {
-        State::SingleQuoted => Err(DeError::ValueUnterminatedSingleQuote),
-        State::DoubleQuoted => Err(DeError::ValueUnterminatedDoubleQuote),
-        State::Unquoted => Ok((
-            equal_pos.expect("Checked by `if equal_pos.is_none() { ... }`"),
-            i,
-        )),
-    }
+
+    Ok(val)
 }
 
 pub struct ValueDeserializer<'a> {
     input: &'a [u8],
-    pos: usize,
 }
 
 impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
@@ -228,7 +64,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let i8 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotI8)?;
+        let value = extract_value(self.input)?;
+        let i8 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotI8)?;
 
         visitor.visit_i8(i8)
     }
@@ -237,7 +74,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let i16 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotI16)?;
+        let value = extract_value(self.input)?;
+        let i16 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotI16)?;
 
         visitor.visit_i16(i16)
     }
@@ -246,7 +84,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let i32 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotI32)?;
+        let value = extract_value(self.input)?;
+        let i32 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotI32)?;
 
         visitor.visit_i32(i32)
     }
@@ -255,7 +94,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let i64 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotI64)?;
+        let value = extract_value(self.input)?;
+        let i64 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotI64)?;
 
         visitor.visit_i64(i64)
     }
@@ -264,7 +104,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let u8 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotU8)?;
+        let value = extract_value(self.input)?;
+        let u8 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotU8)?;
 
         visitor.visit_u8(u8)
     }
@@ -273,7 +114,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let u16 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotU16)?;
+        let value = extract_value(self.input)?;
+        let u16 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotU16)?;
 
         visitor.visit_u16(u16)
     }
@@ -282,7 +124,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let u32 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotU32)?;
+        let value = extract_value(self.input)?;
+        let u32 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotU32)?;
 
         visitor.visit_u32(u32)
     }
@@ -291,7 +134,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let u64 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotU64)?;
+        let value = extract_value(self.input)?;
+        let u64 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotU64)?;
 
         visitor.visit_u64(u64)
     }
@@ -300,7 +144,8 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let f32 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotF32)?;
+        let value = extract_value(self.input)?;
+        let f32 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotF32)?;
 
         visitor.visit_f32(f32)
     }
@@ -309,74 +154,62 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let f64 = lexical_core::parse(self.input).map_err(|_| DeError::ValueNotF64)?;
+        let value = extract_value(self.input)?;
+        let f64 = lexical_core::parse(&value).map_err(|_| DeError::ValueNotF64)?;
 
         visitor.visit_f64(f64)
     }
 
-    fn deserialize_char<V>(self, _: V) -> Result<V::Value, Self::Error>
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        Err(DeError::UnsupportedDeserialization)
+        let value = extract_value(self.input)?;
+        let utf8 = from_utf8(&value).map_err(|_| DeError::InvalidUtf8)?;
+        if utf8.len() != 1 {
+            return Err(DeError::ValueNotChar);
+        }
+        visitor.visit_str(utf8)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        // match &self.input {
-        //     Cow::Borrowed(s) => {
-        //         visitor.visit_borrowed_str(from_utf8(s).map_err(|_| DeError::InvalidUtf8)?)
-        //     }
-        //     Cow::Owned(s) => visitor.visit_str(from_utf8(s).map_err(|_| DeError::InvalidUtf8)?),
-        // }
-        todo!()
+        let value = extract_value(self.input)?;
+        visitor.visit_str(from_utf8(&value).map_err(|_| DeError::InvalidUtf8)?)
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        // match &mut self.input {
-        //     Cow::Borrowed(s) => {
-        //         visitor.visit_string(from_utf8(s).map_err(|_| DeError::InvalidUtf8)?.to_owned())
-        //     }
-        //     Cow::Owned(s) => visitor
-        //         .visit_string(String::from_utf8(s.to_vec()).map_err(|_| DeError::InvalidUtf8)?),
-        // }
-
-        visitor
-            .visit_string(String::from_utf8(self.input.to_vec()).map_err(|_| DeError::InvalidUtf8)?)
+        let value = extract_value(self.input)?;
+        visitor.visit_string(String::from_utf8(value).map_err(|_| DeError::InvalidUtf8)?)
     }
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        // match &self.raw {
-        //     Cow::Borrowed(b) => visitor.visit_borrowed_bytes(b),
-        //     Cow::Owned(b) => visitor.visit_bytes(b),
-        // }
-        todo!()
+        let value = extract_value(self.input)?;
+        visitor.visit_bytes(&value)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        // match &mut self.raw {
-        //     Cow::Borrowed(b) => visitor.visit_borrowed_bytes(b),
-        //     Cow::Owned(b) => visitor.visit_byte_buf(take(b)),
-        // }
-        todo!()
+        let value = extract_value(self.input)?;
+        visitor.visit_byte_buf(value)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        if self.input == b"None" {
+        let value = extract_value(self.input)?;
+        if value == b"None" {
             return visitor.visit_none();
         }
         visitor.visit_some(self)
@@ -386,12 +219,12 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        // if self.raw.as_ref() == b"Unit" {
-        //     return visitor.visit_unit();
-        // }
+        let value = extract_value(self.input)?;
+        if value == b"Unit" {
+            return visitor.visit_unit();
+        }
 
-        // Err(DeError::ValueNotUnit)
-        todo!()
+        Err(DeError::ValueNotUnit)
     }
 
     fn deserialize_unit_struct<V>(
@@ -488,13 +321,17 @@ impl<'de> de::Deserializer<'de> for &mut ValueDeserializer<'de> {
     }
 }
 
-pub struct Deserializer<'a> {
+pub struct Deserializer<'a, P> {
+    parser: P,
     input: &'a [u8],
     /// Offset into input that has been deserialized.
     pos: usize,
 }
 
-impl<'a, 'de> de::Deserializer<'de> for &'a mut Deserializer<'de> {
+impl<'de, P> de::Deserializer<'de> for &mut Deserializer<'de, P>
+where
+    P: Parser,
+{
     type Error = DeError;
 
     fn deserialize_any<V>(self, _: V) -> Result<V::Value, Self::Error>
@@ -677,6 +514,7 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         visitor.visit_map(VarMapAccess {
             de: self,
             equal_pos: 0,
+            end_pos: 0,
         })
     }
 
@@ -719,51 +557,105 @@ impl<'a, 'de> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     }
 }
 
-struct VarMapAccess<'a, 'de> {
-    de: &'a mut Deserializer<'de>,
-    /// Relative offset into current key where the equal is.
+struct VarMapAccess<'a, 'de, P: Parser> {
+    de: &'a mut Deserializer<'de, P>,
+    /// Offset of '=' relative to the current pair.
     equal_pos: usize,
+    /// End offset of the current pair, exclusive.
+    end_pos: usize,
 }
 
-impl<'a, 'de> MapAccess<'de> for VarMapAccess<'a, 'de> {
+impl<'a, 'de, P> MapAccess<'de> for VarMapAccess<'a, 'de, P>
+where
+    P: Parser,
+{
     type Error = DeError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
         K: DeserializeSeed<'de>,
     {
+        while self.de.pos < self.de.input.len()
+            && self.de.parser.is_pair_separator(self.de.input[self.de.pos])
+        {
+            self.de.pos += 1;
+        }
+
         let input = &self.de.input[self.de.pos..];
 
         if input.is_empty() {
             return Ok(None);
         }
 
-        let mut i = 0;
-        match input[i] {
-            b'\0' => return Err(DeError::NullByte),
-            b'=' => return Err(DeError::EmptyKey),
-            c if c.is_ascii_digit() => return Err(DeError::KeyStartsWithDigit),
-            c if !(c.is_ascii_alphabetic() || c == b'_') => return Err(DeError::InvalidKey),
-            _ => i += 1,
-        }
+        let (equal_pos, end_pos) = {
+            let mut i = 0;
 
-        let mut found = false;
-        while !found && i < input.len() {
             match input[i] {
                 b'\0' => return Err(DeError::NullByte),
-                b'=' => found = true,
-                c if !(c.is_ascii_alphanumeric() || c == b'_') => {
-                    return Err(DeError::InvalidKey);
-                }
+                b'=' => return Err(DeError::EmptyKey),
+                c if c.is_ascii_digit() => return Err(DeError::KeyStartsWithDigit),
+                c if !(c.is_ascii_alphabetic() || c == b'_') => return Err(DeError::InvalidKey),
                 _ => i += 1,
             }
-        }
-        if !found {
-            return Err(DeError::MissingEqualSeparator);
-        }
-        self.equal_pos = i;
 
-        seed.deserialize(BytesDeserializer::new(&self.de.input[self.de.pos..i]))
+            let equal_pos = {
+                let mut found = false;
+                while !found && i < input.len() {
+                    match input[i] {
+                        b'\0' => return Err(DeError::NullByte),
+                        b'=' => found = true,
+                        c if !(c.is_ascii_alphanumeric() || c == b'_') => {
+                            return Err(DeError::InvalidKey);
+                        }
+                        _ => i += 1,
+                    }
+                }
+                if !found {
+                    return Err(DeError::MissingEqualSeparator);
+                }
+                i
+            };
+
+            let mut state = State::Unquoted;
+            while i < input.len() {
+                let c = input[i];
+                if c == b'\0' {
+                    return Err(DeError::NullByte);
+                }
+                match state {
+                    State::Unquoted => match c {
+                        b'\\' => {
+                            i += 1;
+                            if i >= input.len() {
+                                return Err(DeError::ValueDanglingEscape);
+                            }
+                        }
+                        b'\'' => state = State::SingleQuoted,
+                        b'"' => state = State::DoubleQuoted,
+                        c if self.de.parser.is_pair_separator(c) => break,
+                        _ => {}
+                    },
+                    State::SingleQuoted if c == b'\'' => state = State::Unquoted,
+                    State::DoubleQuoted => match c {
+                        b'\\' => i += 1,
+                        b'"' => state = State::Unquoted,
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                i += 1;
+            }
+            match state {
+                State::SingleQuoted => return Err(DeError::ValueUnterminatedSingleQuote),
+                State::DoubleQuoted => return Err(DeError::ValueUnterminatedDoubleQuote),
+                State::Unquoted => (equal_pos, i),
+            }
+        };
+
+        self.equal_pos = equal_pos;
+        self.end_pos = end_pos;
+
+        seed.deserialize(BytesDeserializer::new(&input[..equal_pos]))
             .map(Some)
     }
 
@@ -771,67 +663,14 @@ impl<'a, 'de> MapAccess<'de> for VarMapAccess<'a, 'de> {
     where
         V: DeserializeSeed<'de>,
     {
-        // There nothing after the `=` so we return early.
-        let input = if self.de.input[self.equal_pos..].len() == 1 {
-            &[]
-        } else {
-            &self.de.input[self.equal_pos..]
-        };
+        let input = &self.de.input[self.de.pos..];
+        self.de.pos += self.end_pos;
 
-        seed.deserialize(&mut ValueDeserializer { input, pos: 0 })
+        seed.deserialize(&mut ValueDeserializer {
+            input: &input[(self.equal_pos + 1)..self.end_pos],
+        })
     }
 }
-
-// let input = &self.de.input[self.de.pos..];
-
-// let mut borrow = true;
-// for c in &input[(self.equal_pos + 1)..] {
-//     match c {
-//         b'\0' => return Err(DeError::NullByte),
-//         // I will probably expand this allow list to avoid allocation.
-//         b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => (),
-//         _ => borrow = false,
-//     }
-// }
-// // There is no special charaters so no allocation is needed and we return early.
-// if borrow {
-//     return seed.deserialize(&mut ValueDeserializer { input, pos: 0 });
-// }
-
-// let mut val: Vec<u8> = Vec::new();
-// let mut i = self.equal_pos;
-// let mut state = State::Unquoted;
-// while i < input.len() {
-//     let c = input[i];
-//     match state {
-//         State::Unquoted => match c {
-//             b'\\' => {
-//                 i += 1;
-//                 if i >= input.len() {
-//                     return Err(DeError::ValueDanglingEscape);
-//                 }
-//             }
-//             b'\'' => state = State::SingleQuoted,
-//             b'"' => state = State::DoubleQuoted,
-//             b' ' | b'\t' | b'\n' | b';' => break,
-//             _ => {}
-//         },
-//         State::SingleQuoted if c == b'\'' => state = State::Unquoted,
-//         State::DoubleQuoted => match c {
-//             b'\\' => i += 1,
-//             b'"' => state = State::Unquoted,
-//             _ => {}
-//         },
-//         _ => {}
-//     }
-//     i += 1;
-//     val.push(c);
-// }
-// match state {
-//     State::SingleQuoted => return Err(DeError::ValueUnterminatedSingleQuote),
-//     State::DoubleQuoted => return Err(DeError::ValueUnterminatedDoubleQuote),
-//     State::Unquoted => (),
-// };
 
 pub trait Parser {
     #[inline]
@@ -850,12 +689,20 @@ pub trait Parser {
     }
 }
 
+struct AllParser;
+
+impl Parser for AllParser {}
+
 // pub fn from_str<'de, T: Deserialize<'de>>(input: &'de str) -> Result<T, DeError> {
 //     T::deserialize(&mut Deserializer::new(input.as_bytes()))
 // }
 
 pub fn from_bytes<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<T, DeError> {
-    T::deserialize(&mut Deserializer { input, pos: 0 })
+    T::deserialize(&mut Deserializer {
+        parser: AllParser,
+        input,
+        pos: 0,
+    })
 }
 
 #[cfg(test)]
@@ -872,10 +719,12 @@ mod tests {
         #[derive(Deserialize, Debug)]
         struct Test {
             a: String,
+            b: String,
+            c: u8,
         }
 
-        let b: Test = from_bytes(b"a=bytes").unwrap();
+        let b: Test = from_bytes(b"a='bytes'\nb=0xFFFF\nc=12").unwrap();
 
-        println!("{:?}", b);
+        println!("{}", b.a);
     }
 }

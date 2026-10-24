@@ -76,6 +76,7 @@ pub enum DeError {
     ValueNotU64,
     ValueNotF32,
     ValueNotF64,
+    ValueNotChar,
     EmptyString,
     EmptyKey,
     KeyStartsWithDigit,
@@ -141,6 +142,9 @@ impl fmt::Display for DeError {
                 write!(f, "TODO!")
             }
             DeError::ValueNotF64 => {
+                write!(f, "TODO!")
+            }
+            DeError::ValueNotChar => {
                 write!(f, "TODO!")
             }
             DeError::EmptyString => {
