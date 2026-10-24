@@ -7,7 +7,7 @@ extern crate core as std;
 #[cfg(any(feature = "std", test))]
 extern crate std;
 
-//mod de;
+mod de;
 mod error;
 mod ser;
 

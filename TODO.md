@@ -1,6 +1,5 @@
 ### Serialization: 
   - dotenv format for docker/python-dotenv
-  - $PATH like format
   - create tests that dont require allocation
 
 ### Deserialization:
