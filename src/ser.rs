@@ -447,81 +447,55 @@ where
     type SerializeStructVariant = Impossible<Self::Ok, Self::Error>;
 
     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_bool(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_bool(&mut self.writer, v)
     }
 
     fn serialize_i8(self, v: i8) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_i8(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_i8(&mut self.writer, v)
     }
 
     fn serialize_i16(self, v: i16) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_i16(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_i16(&mut self.writer, v)
     }
 
     fn serialize_i32(self, v: i32) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_i32(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_i32(&mut self.writer, v)
     }
 
     fn serialize_i64(self, v: i64) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_i64(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_i64(&mut self.writer, v)
     }
 
     fn serialize_i128(self, v: i128) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_i128(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_i128(&mut self.writer, v)
     }
 
     fn serialize_u8(self, v: u8) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_u8(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_u8(&mut self.writer, v)
     }
 
     fn serialize_u16(self, v: u16) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_u16(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_u16(&mut self.writer, v)
     }
 
     fn serialize_u32(self, v: u32) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_u32(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_u32(&mut self.writer, v)
     }
 
     fn serialize_u64(self, v: u64) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_u64(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_u64(&mut self.writer, v)
     }
 
     fn serialize_u128(self, v: u128) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_u128(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_u128(&mut self.writer, v)
     }
 
     fn serialize_f32(self, v: f32) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_f32(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_f32(&mut self.writer, v)
     }
 
     fn serialize_f64(self, v: f64) -> Result<Self::Ok, Self::Error> {
-        self.formatter.write_f64(&mut self.writer, v)?;
-
-        Ok(())
+        self.formatter.write_f64(&mut self.writer, v)
     }
 
     fn serialize_char(self, v: char) -> Result<Self::Ok, Self::Error> {
@@ -530,8 +504,7 @@ where
     }
 
     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
-        self.serialize_bytes(v.as_bytes())?;
-        Ok(())
+        self.serialize_bytes(v.as_bytes())
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {

@@ -89,6 +89,9 @@ pub enum DeError {
     InvalidUtf8,
     /// The underlying writer returned an IO error.
     IoError,
+    #[cfg(not(feature = "alloc"))]
+    /// Allocation is required to deserialize the given value.
+    AllocationRequired,
     /// Custom message produced through [`serde::ser::Error::custom`].
     Custom(CustomMsg),
 }
@@ -168,6 +171,13 @@ impl fmt::Display for DeError {
             }
             DeError::IoError => {
                 write!(f, "the underlying writer returned an IO error")
+            }
+            #[cfg(not(feature = "alloc"))]
+            DeError::AllocationRequired => {
+                write!(
+                    f,
+                    "allocation required to deserialize value (alloc disabled)"
+                )
             }
             DeError::Custom(msg) => write!(f, "{}", msg),
         }
