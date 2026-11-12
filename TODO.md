@@ -3,5 +3,6 @@
   - create tests that dont require allocation
 
 ### Deserialization:
-  - finish serialization side to have a good source of truth
-    for testing a deserialization implemtation
+  - Implement array support
+  - Check parse_value when `#[cfg(not(feature = "alloc"))]` as I think it can
+    mistake input by splitting too early.

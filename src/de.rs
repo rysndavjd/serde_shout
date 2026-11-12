@@ -1,10 +1,13 @@
 #[cfg(feature = "alloc")]
 use alloc::{borrow::Cow, vec::Vec};
 
-use serde::de::{self, Deserialize, DeserializeSeed, MapAccess, value::BytesDeserializer};
+use serde::de::{
+    self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, value::BytesDeserializer,
+};
 
 use crate::{error::DeError, std::str::from_utf8};
 
+#[cfg(feature = "alloc")]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Default)]
 enum State {
     #[default]
@@ -13,15 +16,95 @@ enum State {
     DoubleQuoted,
 }
 
-struct ValueDeserializer<'a, P> {
-    #[cfg(not(feature = "alloc"))]
-    input: &'a [u8],
-    #[cfg(feature = "alloc")]
-    input: Cow<'a, [u8]>,
-    parser: P,
+#[cfg(not(feature = "alloc"))]
+fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<&'a [u8], DeError> {
+    let rest = &de.input[de.pos..];
+
+    let mut val_len = 0;
+    let mut borrow = true;
+
+    for &b in rest {
+        match b {
+            b'\0' => return Err(DeError::NullByte),
+            b'\'' | b'\\' | b'"' => {
+                borrow = false;
+                break;
+            }
+            b if de.parser.is_pair_separator(b) => break,
+            _ => val_len += 1,
+        }
+    }
+
+    if borrow {
+        de.pos += val_len;
+        return Ok(&rest[..val_len]);
+    }
+
+    Err(DeError::AllocationRequired)
 }
 
-impl<'de, P> de::Deserializer<'de> for &mut ValueDeserializer<'de, P>
+#[cfg(feature = "alloc")]
+fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<Vec<u8>, DeError> {
+    let rest = &de.input[de.pos..];
+
+    let mut val_len = 0;
+    let mut val = Vec::new();
+    let mut state = State::Unquoted;
+    let mut iter = rest.iter().copied();
+
+    while let Some(c) = iter.next() {
+        if c == b'\0' {
+            return Err(DeError::NullByte);
+        }
+
+        if c == b'\\' && state != State::SingleQuoted {
+            match iter.next() {
+                Some(escaped_char) => {
+                    if escaped_char == b'\0' {
+                        return Err(DeError::NullByte);
+                    }
+                    val.push(escaped_char);
+                    val_len += 2;
+                    continue;
+                }
+                None => return Err(DeError::ValueDanglingEscape),
+            }
+        }
+
+        match state {
+            State::Unquoted => match c {
+                b'\'' => state = State::SingleQuoted,
+                b'"' => state = State::DoubleQuoted,
+                c if de.parser.is_pair_separator(c) => break,
+                _ => val.push(c),
+            },
+            State::SingleQuoted => match c {
+                b'\'' => state = State::Unquoted,
+                _ => val.push(c),
+            },
+            State::DoubleQuoted => match c {
+                b'"' => state = State::Unquoted,
+                _ => val.push(c),
+            },
+        }
+        val_len += 1;
+    }
+
+    match state {
+        State::SingleQuoted => return Err(DeError::ValueUnterminatedSingleQuote),
+        State::DoubleQuoted => return Err(DeError::ValueUnterminatedDoubleQuote),
+        State::Unquoted => (),
+    }
+
+    de.pos += val_len;
+    Ok(val)
+}
+
+struct ValueDeserializer<'a, 'de, P> {
+    de: &'a mut Deserializer<'de, P>,
+}
+
+impl<'a, 'de, P> de::Deserializer<'de> for &mut ValueDeserializer<'a, 'de, P>
 where
     P: Parser + Copy,
 {
@@ -38,11 +121,10 @@ where
     where
         V: de::Visitor<'de>,
     {
-        // Needed for `alloc` feature
-        #[allow(clippy::useless_asref)]
-        let bool = if self.input.as_ref() == self.parser.true_repr() {
+        let val = parse_value(self.de)?;
+        let bool = if val == self.de.parser.true_repr() {
             true
-        } else if self.input.as_ref() == self.parser.false_repr() {
+        } else if val == self.de.parser.false_repr() {
             false
         } else {
             return Err(DeError::ValueNotBoolean);
@@ -55,79 +137,88 @@ where
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_i8(self.parser.parse_i8(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_i8(self.de.parser.parse_i8(&val)?)
     }
 
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_i16(self.parser.parse_i16(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_i16(self.de.parser.parse_i16(&val)?)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_i32(self.parser.parse_i32(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_i32(self.de.parser.parse_i32(&val)?)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_i64(self.parser.parse_i64(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_i64(self.de.parser.parse_i64(&val)?)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_u8(self.parser.parse_u8(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_u8(self.de.parser.parse_u8(&val)?)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_u16(self.parser.parse_u16(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_u16(self.de.parser.parse_u16(&val)?)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_u32(self.parser.parse_u32(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_u32(self.de.parser.parse_u32(&val)?)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_u64(self.parser.parse_u64(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_u64(self.de.parser.parse_u64(&val)?)
     }
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_f32(self.parser.parse_f32(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_f32(self.de.parser.parse_f32(&val)?)
     }
 
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_f64(self.parser.parse_f64(self.input.as_ref())?)
+        let val = parse_value(self.de)?;
+        visitor.visit_f64(self.de.parser.parse_f64(&val)?)
     }
 
     fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        // Needed for `alloc` feature
-        #[allow(clippy::useless_asref)]
-        let utf8 = from_utf8(self.input.as_ref()).map_err(|_| DeError::InvalidUtf8)?;
+        let val = parse_value(self.de)?;
+        let utf8 = from_utf8(&val).map_err(|_| DeError::InvalidUtf8)?;
         if utf8.len() != 1 {
             return Err(DeError::ValueNotChar);
         }
@@ -138,9 +229,8 @@ where
     where
         V: de::Visitor<'de>,
     {
-        // Needed for `alloc` feature
-        #[allow(clippy::useless_asref)]
-        visitor.visit_str(from_utf8(self.input.as_ref()).map_err(|_| DeError::InvalidUtf8)?)
+        let val = parse_value(self.de)?;
+        visitor.visit_str(from_utf8(&val).map_err(|_| DeError::InvalidUtf8)?)
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -154,23 +244,31 @@ where
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_bytes(self.input.as_ref())
+        let val = parse_value(self.de)?;
+        visitor.visit_bytes(&val)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_byte_buf(self.input.to_vec())
+        let val = parse_value(self.de)?;
+        #[cfg(not(feature = "alloc"))]
+        {
+            visitor.visit_byte_buf(val.to_vec())
+        }
+        #[cfg(feature = "alloc")]
+        {
+            visitor.visit_byte_buf(val)
+        }
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        // Needed for `alloc` feature
-        #[allow(clippy::useless_asref)]
-        if self.input.as_ref() == self.parser.none_repr() {
+        let val = parse_value(self.de)?;
+        if val == self.de.parser.none_repr() {
             return visitor.visit_none();
         }
         visitor.visit_some(self)
@@ -180,9 +278,8 @@ where
     where
         V: de::Visitor<'de>,
     {
-        // Needed for `alloc` feature
-        #[allow(clippy::useless_asref)]
-        if self.input.as_ref() == self.parser.unit_repr() {
+        let val = parse_value(self.de)?;
+        if val == self.de.parser.unit_repr() {
             return visitor.visit_unit();
         }
 
@@ -211,11 +308,12 @@ where
         visitor.visit_newtype_struct(self)
     }
 
-    fn deserialize_seq<V>(self, _: V) -> Result<V::Value, Self::Error>
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        Err(DeError::UnsupportedDeserialization)
+        //visitor.visit_seq(self)
+        todo!()
     }
 
     fn deserialize_tuple<V>(self, _: usize, _: V) -> Result<V::Value, Self::Error>
@@ -280,6 +378,27 @@ where
         V: de::Visitor<'de>,
     {
         visitor.visit_unit()
+    }
+}
+
+impl<'a, 'de, P> SeqAccess<'de> for &mut ValueDeserializer<'a, 'de, P>
+where
+    P: Parser + Copy,
+{
+    type Error = DeError;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        // for c in self.de.input {
+        //     match *c {
+        //         c if self.de.parser.is_seq_separator(c) => {}
+        //         _ => (),
+        //     }
+        // }
+
+        todo!()
     }
 }
 
@@ -578,102 +697,9 @@ where
     where
         V: DeserializeSeed<'de>,
     {
-        let val_start = self.equal_pos + 1;
-        let rest = &self.de.input[self.de.pos + val_start..];
+        self.de.pos += self.equal_pos + 1;
 
-        let mut val_len = 0;
-        let mut borrow = true;
-
-        for &b in rest {
-            match b {
-                b'\0' => return Err(DeError::NullByte),
-                b'\'' | b'\\' | b'"' => {
-                    borrow = false;
-                    break;
-                }
-                b if self.de.parser.is_pair_separator(b) => break,
-                _ => val_len += 1,
-            }
-        }
-
-        #[cfg(not(feature = "alloc"))]
-        {
-            if borrow {
-                self.de.pos += val_start + val_len;
-                return seed.deserialize(&mut ValueDeserializer {
-                    input: &rest[..val_len],
-                    parser: self.de.parser,
-                });
-            }
-
-            Err(DeError::AllocationRequired)
-        }
-
-        #[cfg(feature = "alloc")]
-        {
-            if borrow {
-                self.de.pos += val_start + val_len;
-                return seed.deserialize(&mut ValueDeserializer {
-                    input: Cow::Borrowed(&rest[..val_len]),
-                    parser: self.de.parser,
-                });
-            }
-
-            val_len = 0;
-            let mut val = Vec::new();
-            let mut state = State::Unquoted;
-            let mut iter = rest.iter().copied();
-
-            while let Some(c) = iter.next() {
-                if c == b'\0' {
-                    return Err(DeError::NullByte);
-                }
-
-                if c == b'\\' && state != State::SingleQuoted {
-                    match iter.next() {
-                        Some(escaped_char) => {
-                            if escaped_char == b'\0' {
-                                return Err(DeError::NullByte);
-                            }
-                            val.push(escaped_char);
-                            val_len += 2;
-                            continue;
-                        }
-                        None => return Err(DeError::ValueDanglingEscape),
-                    }
-                }
-
-                match state {
-                    State::Unquoted => match c {
-                        b'\'' => state = State::SingleQuoted,
-                        b'"' => state = State::DoubleQuoted,
-                        c if self.de.parser.is_pair_separator(c) => break,
-                        _ => val.push(c),
-                    },
-                    State::SingleQuoted => match c {
-                        b'\'' => state = State::Unquoted,
-                        _ => val.push(c),
-                    },
-                    State::DoubleQuoted => match c {
-                        b'"' => state = State::Unquoted,
-                        _ => val.push(c),
-                    },
-                }
-                val_len += 1;
-            }
-
-            match state {
-                State::SingleQuoted => return Err(DeError::ValueUnterminatedSingleQuote),
-                State::DoubleQuoted => return Err(DeError::ValueUnterminatedDoubleQuote),
-                State::Unquoted => (),
-            }
-
-            self.de.pos += val_start + val_len;
-            seed.deserialize(&mut ValueDeserializer {
-                input: Cow::Owned(val),
-                parser: self.de.parser,
-            })
-        }
+        seed.deserialize(&mut ValueDeserializer { de: self.de })
     }
 }
 
@@ -681,6 +707,21 @@ pub trait Parser {
     #[inline]
     fn is_pair_separator(&self, c: u8) -> bool {
         matches!(c, b' ' | b'\t' | b'\n' | b';')
+    }
+
+    #[inline]
+    fn is_seq_separator(&self, c: u8) -> bool {
+        matches!(c, b' ')
+    }
+
+    #[inline]
+    fn is_seq_start(&self, c: u8) -> bool {
+        matches!(c, b'\'')
+    }
+
+    #[inline]
+    fn is_seq_end(&self, c: u8) -> bool {
+        matches!(c, b'\'')
     }
 
     #[inline]
@@ -759,9 +800,9 @@ struct AllParser;
 
 impl Parser for AllParser {}
 
-// pub fn from_str<'de, T: Deserialize<'de>>(input: &'de str) -> Result<T, DeError> {
-//     T::deserialize(&mut Deserializer::new(input.as_bytes()))
-// }
+pub fn from_str<'de, T: Deserialize<'de>>(input: &'de str) -> Result<T, DeError> {
+    from_bytes(input.as_bytes())
+}
 
 pub fn from_bytes<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<T, DeError> {
     T::deserialize(&mut Deserializer {
@@ -784,12 +825,15 @@ mod tests {
     fn deserialize() {
         #[derive(Deserialize, Debug)]
         struct Test {
-            a: String,
-            b: String,
-            c: u8,
+            string: String,
+            a: Vec<String>,
         }
 
-        let b: Test = from_bytes(b"a=by\\''test'tes\nb=0xFFFF\nc=12").unwrap();
+        // b"a=''\\''1'\\'' '\\''2'\\'' '\\''3'\\'''"
+        //let b: Test = from_bytes(b"a=('1' '2' '3')").unwrap();
+        let b: Test =
+            from_bytes(b"string=Item a=''\\''1'\\'' '\\''Some'\\''thimg'\\'' '\\''3'\\'''")
+                .unwrap();
 
         println!("{:?}", b);
     }

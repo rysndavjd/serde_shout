@@ -64,6 +64,7 @@ pub enum DeError {
     ValueDanglingEscape,
     ValueUnterminatedSingleQuote,
     ValueUnterminatedDoubleQuote,
+    ValueUnterminatedSequence,
     ValueNotUnit,
     ValueNotBoolean,
     ValueNotI8,
@@ -109,6 +110,9 @@ impl fmt::Display for DeError {
                 write!(f, "TODO!")
             }
             DeError::ValueUnterminatedDoubleQuote => {
+                write!(f, "TODO!")
+            }
+            DeError::ValueUnterminatedSequence => {
                 write!(f, "TODO!")
             }
             DeError::ValueNotUnit => {
