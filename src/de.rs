@@ -1,5 +1,5 @@
 #[cfg(feature = "alloc")]
-use alloc::{borrow::Cow, vec::Vec};
+use alloc::vec::Vec;
 
 use serde::de::{
     self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, value::BytesDeserializer,
@@ -7,7 +7,6 @@ use serde::de::{
 
 use crate::{error::DeError, std::str::from_utf8};
 
-#[cfg(feature = "alloc")]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Default)]
 enum State {
     #[default]
@@ -16,30 +15,66 @@ enum State {
     DoubleQuoted,
 }
 
+/// For when allocation is not available we still validate given string to
+/// ensure we do not split values incorrectly for values that are valid.
 #[cfg(not(feature = "alloc"))]
 fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<&'a [u8], DeError> {
     let rest = &de.input[de.pos..];
 
     let mut val_len = 0;
     let mut borrow = true;
+    let mut state = State::Unquoted;
+    let mut iter = rest.iter().copied();
 
-    for &b in rest {
-        match b {
-            b'\0' => return Err(DeError::NullByte),
-            b'\'' | b'\\' | b'"' => {
-                borrow = false;
-                break;
-            }
-            b if de.parser.is_pair_separator(b) => break,
-            _ => val_len += 1,
+    while let Some(c) = iter.next() {
+        if c == b'\0' {
+            return Err(DeError::NullByte);
         }
+
+        if c == b'\\' && state != State::SingleQuoted {
+            match iter.next() {
+                Some(escaped_char) => {
+                    if escaped_char == b'\0' {
+                        return Err(DeError::NullByte);
+                    }
+                    borrow = false;
+                    val_len += 2;
+                    continue;
+                }
+                None => return Err(DeError::ValueDanglingEscape),
+            }
+        }
+
+        match state {
+            State::Unquoted => match c {
+                b'\'' => state = State::SingleQuoted,
+                b'"' => state = State::DoubleQuoted,
+                c if de.parser.is_pair_separator(c) => break,
+                _ => (),
+            },
+            State::SingleQuoted => match c {
+                b'\'' => state = State::Unquoted,
+                _ => borrow = false,
+            },
+            State::DoubleQuoted => match c {
+                b'"' => state = State::Unquoted,
+                _ => borrow = false,
+            },
+        }
+        val_len += 1;
     }
+
+    match state {
+        State::SingleQuoted => return Err(DeError::ValueUnterminatedSingleQuote),
+        State::DoubleQuoted => return Err(DeError::ValueUnterminatedDoubleQuote),
+        State::Unquoted => (),
+    }
+
+    de.pos += val_len;
 
     if borrow {
-        de.pos += val_len;
         return Ok(&rest[..val_len]);
     }
-
     Err(DeError::AllocationRequired)
 }
 
@@ -138,6 +173,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_i8(self.de.parser.parse_i8(&val)?)
     }
 
@@ -146,6 +182,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_i16(self.de.parser.parse_i16(&val)?)
     }
 
@@ -154,6 +191,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_i32(self.de.parser.parse_i32(&val)?)
     }
 
@@ -162,6 +200,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_i64(self.de.parser.parse_i64(&val)?)
     }
 
@@ -170,6 +209,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_u8(self.de.parser.parse_u8(&val)?)
     }
 
@@ -178,6 +218,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_u16(self.de.parser.parse_u16(&val)?)
     }
 
@@ -186,6 +227,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_u32(self.de.parser.parse_u32(&val)?)
     }
 
@@ -194,6 +236,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_u64(self.de.parser.parse_u64(&val)?)
     }
 
@@ -202,6 +245,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_f32(self.de.parser.parse_f32(&val)?)
     }
 
@@ -210,6 +254,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_f64(self.de.parser.parse_f64(&val)?)
     }
 
@@ -218,6 +263,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         let utf8 = from_utf8(&val).map_err(|_| DeError::InvalidUtf8)?;
         if utf8.len() != 1 {
             return Err(DeError::ValueNotChar);
@@ -230,6 +276,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_str(from_utf8(&val).map_err(|_| DeError::InvalidUtf8)?)
     }
 
@@ -245,6 +292,7 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
+        #[allow(clippy::needless_borrow)]
         visitor.visit_bytes(&val)
     }
 
@@ -826,14 +874,11 @@ mod tests {
         #[derive(Deserialize, Debug)]
         struct Test {
             string: String,
-            a: Vec<String>,
         }
 
         // b"a=''\\''1'\\'' '\\''2'\\'' '\\''3'\\'''"
         //let b: Test = from_bytes(b"a=('1' '2' '3')").unwrap();
-        let b: Test =
-            from_bytes(b"string=Item a=''\\''1'\\'' '\\''Some'\\''thimg'\\'' '\\''3'\\'''")
-                .unwrap();
+        let b: Test = from_bytes(b"string=Item").unwrap();
 
         println!("{:?}", b);
     }

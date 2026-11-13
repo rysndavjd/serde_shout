@@ -4,5 +4,4 @@
 
 ### Deserialization:
   - Implement array support
-  - Check parse_value when `#[cfg(not(feature = "alloc"))]` as I think it can
-    mistake input by splitting too early.
+  - Implement fast path for parse_value for values not needing allocation.
