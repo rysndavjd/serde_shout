@@ -1,5 +1,5 @@
 #[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 
 use serde::de::{
     self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, value::BytesDeserializer,
@@ -79,11 +79,11 @@ fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<&'a [u8], 
 }
 
 #[cfg(feature = "alloc")]
-fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<Vec<u8>, DeError> {
+fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<Cow<'a, [u8]>, DeError> {
     let rest = &de.input[de.pos..];
 
     let mut val_len = 0;
-    let mut val = Vec::new();
+    let mut val: Option<Vec<u8>> = None;
     let mut state = State::Unquoted;
     let mut iter = rest.iter().copied();
 
@@ -98,7 +98,9 @@ fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<Vec<u8>, D
                     if escaped_char == b'\0' {
                         return Err(DeError::NullByte);
                     }
-                    val.push(escaped_char);
+                    let v = val.get_or_insert_with(|| rest[..val_len].to_vec());
+                    v.push(escaped_char);
+
                     val_len += 2;
                     continue;
                 }
@@ -108,18 +110,34 @@ fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<Vec<u8>, D
 
         match state {
             State::Unquoted => match c {
-                b'\'' => state = State::SingleQuoted,
-                b'"' => state = State::DoubleQuoted,
+                b'\'' => {
+                    val.get_or_insert_with(|| rest[..val_len].to_vec());
+                    state = State::SingleQuoted;
+                }
+                b'"' => {
+                    val.get_or_insert_with(|| rest[..val_len].to_vec());
+                    state = State::DoubleQuoted;
+                }
                 c if de.parser.is_pair_separator(c) => break,
-                _ => val.push(c),
+                _ => {
+                    if let Some(v) = val.as_mut() {
+                        v.push(c);
+                    }
+                }
             },
             State::SingleQuoted => match c {
                 b'\'' => state = State::Unquoted,
-                _ => val.push(c),
+                _ => val
+                    .as_mut()
+                    .expect("INVARIANT: val should be initialized in `State::Unquoted`")
+                    .push(c),
             },
             State::DoubleQuoted => match c {
                 b'"' => state = State::Unquoted,
-                _ => val.push(c),
+                _ => val
+                    .as_mut()
+                    .expect("INVARIANT: val should be initialized in `State::Unquoted`")
+                    .push(c),
             },
         }
         val_len += 1;
@@ -132,7 +150,11 @@ fn parse_value<'a, P: Parser>(de: &mut Deserializer<'a, P>) -> Result<Vec<u8>, D
     }
 
     de.pos += val_len;
-    Ok(val)
+
+    Ok(match val {
+        Some(v) => Cow::Owned(v),
+        None => Cow::Borrowed(&rest[..val_len]),
+    })
 }
 
 struct ValueDeserializer<'a, 'de, P> {
@@ -301,14 +323,15 @@ where
         V: de::Visitor<'de>,
     {
         let val = parse_value(self.de)?;
-        #[cfg(not(feature = "alloc"))]
-        {
-            visitor.visit_byte_buf(val.to_vec())
-        }
         #[cfg(feature = "alloc")]
         {
-            visitor.visit_byte_buf(val)
+            match val {
+                Cow::Borrowed(v) => visitor.visit_bytes(v),
+                Cow::Owned(v) => visitor.visit_byte_buf(v),
+            }
         }
+        #[cfg(not(feature = "alloc"))]
+        visitor.visit_bytes(val)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -878,7 +901,7 @@ mod tests {
 
         // b"a=''\\''1'\\'' '\\''2'\\'' '\\''3'\\'''"
         //let b: Test = from_bytes(b"a=('1' '2' '3')").unwrap();
-        let b: Test = from_bytes(b"string=Item").unwrap();
+        let b: Test = from_bytes(b"string=Item\\ 'Ya man'").unwrap();
 
         println!("{:?}", b);
     }

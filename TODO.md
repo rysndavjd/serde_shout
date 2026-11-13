@@ -4,4 +4,3 @@
 
 ### Deserialization:
   - Implement array support
-  - Implement fast path for parse_value for values not needing allocation.
