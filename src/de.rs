@@ -1,5 +1,6 @@
 #[cfg(feature = "alloc")]
 use alloc::{borrow::Cow, vec::Vec};
+use std::println;
 
 use serde::de::{
     self, Deserialize, DeserializeSeed, MapAccess, SeqAccess, value::BytesDeserializer,
@@ -383,8 +384,7 @@ where
     where
         V: de::Visitor<'de>,
     {
-        //visitor.visit_seq(self)
-        todo!()
+        visitor.visit_seq(self)
     }
 
     fn deserialize_tuple<V>(self, _: usize, _: V) -> Result<V::Value, Self::Error>
@@ -462,12 +462,61 @@ where
     where
         T: DeserializeSeed<'de>,
     {
-        // for c in self.de.input {
-        //     match *c {
-        //         c if self.de.parser.is_seq_separator(c) => {}
-        //         _ => (),
-        //     }
-        // }
+        let rest = &self.de.input[self.de.pos..];
+
+        let mut val_len = 0;
+        let mut val = Vec::new();
+        let mut state = State::Unquoted;
+
+        while val_len < rest.len() {
+            let c = rest[val_len];
+
+            if c == b'\0' {
+                return Err(DeError::NullByte);
+            }
+
+            if c == b'\\' && state != State::SingleQuoted {
+                match rest.get(val_len + 1) {
+                    Some(escaped_char) => {
+                        if *escaped_char == b'\0' {
+                            return Err(DeError::NullByte);
+                        }
+                        val.push(*escaped_char);
+                        val_len += 2;
+                        continue;
+                    }
+                    None => return Err(DeError::ValueDanglingEscape),
+                }
+            }
+
+            match state {
+                State::Unquoted => match c {
+                    b'\'' => state = State::SingleQuoted,
+                    b'"' => state = State::DoubleQuoted,
+                    c if self.de.parser.is_seq_separator(c) => break,
+                    _ => val.push(c),
+                },
+                State::SingleQuoted => match c {
+                    b'\'' => state = State::Unquoted,
+                    _ => val.push(c),
+                },
+                State::DoubleQuoted => match c {
+                    b'"' => state = State::Unquoted,
+                    _ => val.push(c),
+                },
+            }
+            val_len += 1;
+        }
+
+        match state {
+            State::SingleQuoted => return Err(DeError::ValueUnterminatedSingleQuote),
+            State::DoubleQuoted => return Err(DeError::ValueUnterminatedDoubleQuote),
+            State::Unquoted => (),
+        }
+
+        self.de.pos += val_len;
+
+        println!("VAL: {val:?}");
 
         todo!()
     }
@@ -786,6 +835,11 @@ pub trait Parser {
     }
 
     #[inline]
+    fn seq_word_wrapper(&self) -> &'static [u8] {
+        b"'\\''"
+    }
+
+    #[inline]
     fn is_seq_start(&self, c: u8) -> bool {
         matches!(c, b'\'')
     }
@@ -896,12 +950,14 @@ mod tests {
     fn deserialize() {
         #[derive(Deserialize, Debug)]
         struct Test {
-            string: String,
+            //a: Vec<u8>,
+            a: String,
         }
 
         // b"a=''\\''1'\\'' '\\''2'\\'' '\\''3'\\'''"
         //let b: Test = from_bytes(b"a=('1' '2' '3')").unwrap();
-        let b: Test = from_bytes(b"string=Item\\ 'Ya man'").unwrap();
+        //let b: Test = from_bytes(b"a=''\\''1'\\'' '\\''2'\\'' '\\''3'\\'''").unwrap();
+        let b: Test = from_bytes(b"a=121").unwrap();
 
         println!("{:?}", b);
     }
